@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Track card harness</title>
+<style>
+  html[data-theme="dark"], html[data-theme="navy"] { --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --card-background-color: #1c1c1c; --secondary-background-color: #2a2a2a;
+    --divider-color: rgba(225,225,225,.14); --primary-color: #03a9f4; --primary-background-color: #111111; --page: #111; --error-color: #ef5350; --warning-color: #ffa600; }
+  html[data-theme="light"] { --primary-text-color: #212121; --secondary-text-color: #6b6b6b; --card-background-color: #fff; --secondary-background-color: #eeeeee;
+    --divider-color: rgba(0,0,0,.14); --primary-color: #0288d1; --primary-background-color: #fafafa; --page: #f4f4f4; --error-color: #c62828; --warning-color: #e65100; }
+  html[data-theme="navy"] { --page: #05090d; }
+  body { margin: 0; padding: 24px; background: var(--page); font-family: Roboto, "Helvetica Neue", Arial, sans-serif; }
+  #wrap { width: var(--w, 440px); }
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<script>
+  // A stand-in for Home Assistant's frontend: theme variables, ha-card, ha-icon and a `hass` object.
+  const q = new URLSearchParams(location.search);
+  document.documentElement.dataset.theme = q.get("theme") || "dark";
+  const wrap = document.getElementById("wrap");
+  wrap.style.setProperty("--w", (q.get("w") || 440) + "px");
+  // Material Design Icons paths (Apache 2.0), for the icons the card and the made-up resources use.
+  const ICONS = {
+    "mdi:paper-roll": "M9 3C5.69 3 3.14 5.69 3 9V21H12V13.46C13.1 14.45 14.5 15 16 15C19.31 15 22 12.31 22 9C22 5.69 19.31 3 16 3H9M16 5C18.21 5 20 6.79 20 9C20 11.21 18.21 13 16 13C13.79 13 12 11.21 12 9C12 6.79 13.79 5 16 5M16 7.25C15.03 7.25 14.25 8.03 14.25 9C14.25 9.97 15.03 10.75 16 10.75C16.97 10.75 17.75 9.97 17.75 9C17.75 8.03 16.97 7.25 16 7.25M4 12H5V13H4V12M6 12H7V13H6V12M8 12H9V13H8V12M10 12H11V13H10V12Z",
+    "mdi:food-variant": "M22,18A4,4 0 0,1 18,22H15A4,4 0 0,1 11,18V16H17.79L20.55,11.23L22.11,12.13L19.87,16H22V18M9,22H2C2,19 2,16 2.33,12.83C2.6,10.3 3.08,7.66 3.6,5H3V3H4L7,3H8V5H7.4C7.92,7.66 8.4,10.3 8.67,12.83C9,16 9,19 9,22Z",
+    "mdi:calendar-month": "M9,10V12H7V10H9M13,10V12H11V10H13M17,10V12H15V10H17M19,3A2,2 0 0,1 21,5V19A2,2 0 0,1 19,21H5C3.89,21 3,20.1 3,19V5A2,2 0 0,1 5,3H6V1H8V3H16V1H18V3H19M19,19V8H5V19H19M9,14V16H7V14H9M13,14V16H11V14H13M17,14V16H15V14H17Z",
+    "mdi:alert-circle-outline": "M11,15H13V17H11V15M11,7H13V13H11V7M12,2C6.47,2 2,6.5 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20Z",
+    "mdi:delete-outline": "M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19M8,9H16V19H8V9M15.5,4L14.5,3H9.5L8.5,4H5V6H19V4H15.5Z",
+  };
+  customElements.define("ha-icon", class extends HTMLElement {
+    static get observedAttributes() { return ["icon"]; }
+    connectedCallback() { this.draw(); }
+    attributeChangedCallback() { this.draw(); }
+    draw() {
+      const size = "var(--mdc-icon-size, 24px)";
+      this.style.cssText = `display:inline-flex;width:${size};height:${size}`;
+      this.innerHTML = `<svg viewBox="0 0 24 24" width="100%" height="100%"><path fill="currentColor" d="${ICONS[this.getAttribute("icon")] || ""}"/></svg>`;
+    }
+  });
+  customElements.define("ha-card", class extends HTMLElement {
+    // Styled from its own shadow root, with the same theme variables, as Home Assistant's ha-card is,
+    // so card-mod's `ha-card { ... }` from the card around it wins as it does on a dashboard.
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = "<style>:host{display:block;background:var(--ha-card-background,var(--card-background-color));"
+        + "border-radius:var(--ha-card-border-radius,12px);border:var(--ha-card-border-width,1px) solid var(--ha-card-border-color,var(--divider-color));"
+        + "box-shadow:var(--ha-card-box-shadow,none);color:var(--primary-text-color)}</style><slot></slot>";
+    }
+  });
+  window.subs = [];
+  window.offline = false;   // set true to make every call fail the way a dropped connection does
+  window.notify = () => window.subs.forEach((f) => f({ changed: true }));
+  const READS = ["resources", "overview", "events"];
+  window.makeHass = (connected = true) => ({
+    connected,
+    config: { state: "RUNNING" },
+    callWS: async (msg) => {
+      if (window.offline) throw 3;   // home-assistant-js-websocket rejects with ERR_CONNECTION_LOST
+      const r = await fetch("/ws", { method: "POST", body: JSON.stringify(msg) });
+      const j = await r.json();
+      if (!r.ok) throw j;
+      if (!READS.includes(msg.type.split("/")[1])) setTimeout(window.notify, 30);   // the subscription's event
+      return j;
+    },
+    // Subscribing asks the integration (so it fails, as Home Assistant's does, while Stock Track isn't loaded);
+    // its events are window.notify(), sent after every write.
+    connection: {
+      subscribeMessage: async (cb, msg) => {
+        if (window.offline) throw 3;
+        const r = await fetch("/ws", { method: "POST", body: JSON.stringify(msg) });
+        const j = await r.json();   // read it either way, or the request stays open
+        if (!r.ok) throw j;
+        window.subs.push(cb);
+        return async () => { window.subs = window.subs.filter((f) => f !== cb); };
+      },
+    },
+  });
+  // The real dashboard wraps the card with card-mod: a dark navy gradient with a coloured left border.
+  window.NAVY = "ha-card { --st-accent: #FF7A93; background: linear-gradient(135deg, rgba(2,12,20,0.95) 0%, rgba(0,32,48,0.92) 100%); "
+    + "border: 1px solid rgba(255,122,147,0.45); border-left: 3px solid #FF7A93; border-radius: 4px; "
+    + "box-shadow: 0 0 14px rgba(255,122,147,0.15), inset 0 0 18px rgba(255,122,147,0.05); }";
+</script>
+<script type="module">
+  await import("/card.js?" + Date.now());
+  const card = document.createElement("stock-track-card");
+  const config = {};
+  for (const key of ["view", "title", "entry_id"]) if (q.get(key)) config[key] = q.get(key);
+  if (q.get("entry")) config.entry_id = q.get("entry");
+  if (q.get("weeks")) config.weeks = Number(q.get("weeks"));
+  if (q.get("hide_title")) config.hide_title = true;
+  card.setConfig(config);
+  document.getElementById("wrap").appendChild(card);
+  // card-mod puts an element of its own inside the card as the dashboard loads, before the first draw.
+  const mod = Object.assign(document.createElement("card-mod"), { id: "from-card-mod" });
+  if (q.get("theme") === "navy") mod.innerHTML = `<style>${window.NAVY}</style>`;
+  card.shadowRoot.appendChild(mod);
+  card.hass = window.makeHass();
+  window.card = card;
+</script>
+</body>
+</html>
