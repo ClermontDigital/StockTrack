@@ -1,3 +1,19 @@
+## 0.1.1
+
+Fixes to the card, from a review.
+
+- **The popup stays open when the dashboard moves the card**, as a masonry view does when a phone is turned,
+  and stays on the day that was open.
+- **Selecting text in the popup** and letting go outside it no longer closes it. A tap outside it still does.
+- **Bigger tap areas**: the previous and next day, All days, delete, Add and Save, close and the calendar
+  button each take a tap anywhere in 44 px.
+- **Screen readers** hear the new count, or how many were used on the day being edited, from one live region
+  that isn't redrawn.
+- **Text on the accent** is dark or light to suit it, so a dark accent from a theme or card-mod stays readable
+  on the buttons, the stickers, today's date and each day's canister.
+- **Older iPhones** (iOS before 16.2, which can't mix colours in CSS) get plain tints instead of missing ones,
+  and used days keep their fill.
+
 ## 0.1.0
 
 First release.

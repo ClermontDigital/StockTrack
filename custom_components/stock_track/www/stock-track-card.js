@@ -3,7 +3,7 @@
  * Colours come from the Home Assistant theme; set --stock-track-accent to change the accent
  * (or --st-accent on ha-card, from card-mod).
  */
-const ST_VERSION = "0.1.0";
+const ST_VERSION = "0.1.1";
 
 const ST_MAX = 100000;                // the most the integration takes in one go
 const ST_UNIT = "rolls";              // only used if a resource somehow comes without a unit or icon of its own
@@ -36,6 +36,19 @@ const stClock = (ts) => { const d = new Date(ts); return Number.isNaN(d.getTime(
 const stMessage = (err) => (err && typeof err === "object" && err.message ? String(err.message) : ST_OFFLINE);
 // A spreadsheet treats a cell starting with one of these as a formula.
 const stCsvText = (s) => `"${(/^[=+\-@\t\r]/.test(s) ? "'" + s : s).replace(/"/g, '""')}"`;
+// Text on the accent: dark or light, whichever reads better on it (WCAG contrast).
+const ST_DARK = [5, 36, 30];
+const ST_LABEL_RGB = [255, 253, 245];   // --st-label, the pale end of a used day's canister
+const stRgb = (css) => {
+  const n = String(css).match(/-?[\d.]+/g)?.map(Number);
+  if (!n || n.length < 3) return null;
+  return /^color\(/.test(css) ? n.slice(0, 3).map((c) => c * 255) : n.slice(0, 3);
+};
+const stLum = (rgb) => rgb.map((c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; })
+  .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+const stContrast = (a, b) => { const x = stLum(a); const y = stLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+const stLightText = (rgb) => stContrast(rgb, [255, 255, 255]) > stContrast(rgb, ST_DARK);
+const stMix = (a, b, p) => a.map((c, i) => c * p + b[i] * (1 - p));
 
 // Bring what's on screen (`from`) into line with what was just drawn (`to`), keeping every element that is still
 // the same thing. So a redraw never takes focus, the caret or a half-typed value out of a box (and a phone's
@@ -127,9 +140,14 @@ class StockTrackCard extends HTMLElement {
     const root = this.shadowRoot;
     // The frame is built once, here, and only its inside is ever redrawn. card-mod and themes put their
     // styling next to it or on it, so nothing else in the shadow root is touched after this.
-    root.innerHTML = `<style>${StockTrackCard.styles}</style><ha-card><div class="body"></div></ha-card>`;
+    // Inside the frame but outside what's redrawn: one live region for screen readers (a region that's redrawn
+    // isn't reliably announced), and a probe that resolves the accent, wherever it was set.
+    root.innerHTML = `<style>${StockTrackCard.styles}</style><ha-card><div class="sr" aria-live="polite" aria-atomic="true"></div>`
+      + `<span class="probe" aria-hidden="true"></span><div class="body"></div></ha-card>`;
     this._frame = root.querySelector("ha-card");
     this._main = root.querySelector(".body");
+    this._live = root.querySelector(".sr");
+    this._probe = root.querySelector(".probe");
     root.addEventListener("click", (ev) => this._onClick(ev));
     root.addEventListener("input", (ev) => this._onInput(ev));
     // Chrome fires change on an edited box that a redraw takes away: that isn't the person leaving the box.
@@ -208,7 +226,21 @@ class StockTrackCard extends HTMLElement {
     if (this._clockDay && now !== this._clockDay) {   // midnight: a new day
       this._clockDay = now;
       this._load();
+      return;
     }
+    // card-mod can apply its accent after the first draw: look again now and then, and redraw if it changed.
+    if (this._data && performance.now() - (this._inkAt || 0) > 2000 && this._ink()) this._render();
+  }
+
+  // Text on the accent is dark or light to suit it, whether it's the default, a theme's or card-mod's.
+  _ink() {
+    this._inkAt = performance.now();
+    const color = getComputedStyle(this._probe).color;
+    if (color === this._inkFor) return false;
+    this._inkFor = color;
+    this._accentRgb = stRgb(color);
+    this._main.style.setProperty("--st-on-accent", this._accentRgb && stLightText(this._accentRgb) ? "#FFFFFF" : "#05241E");
+    return true;
   }
 
   connectedCallback() {
@@ -216,6 +248,10 @@ class StockTrackCard extends HTMLElement {
     window.addEventListener("pointercancel", this._release, true);
     document.addEventListener("visibilitychange", this._visibility);
     if (this._hass && this._entryId) { this._subscribe(); this._load(); }
+    // Moved, not removed (a masonry view re-laying its columns when a phone turns): taking the card out of the
+    // page took its popup out of the top layer, so show it as a popup again.
+    const d = this._dialog;
+    if (d?.open && !d.matches(":modal")) { d.close(); d.showModal(); }
   }
 
   // Back online, or Home Assistant has finished starting. After a restart the old subscription is gone (and
@@ -245,7 +281,8 @@ class StockTrackCard extends HTMLElement {
     this._pressing = false;
     this._flushNote();
     this._unsubscribe();
-    this._dialog?.close();
+    // Only if it stays out of the page: a card that's just being moved is back before this runs.
+    queueMicrotask(() => { if (!this.isConnected) this._dialog?.close(); });
   }
 
   _ws(msg) { return this._hass.callWS(msg); }
@@ -593,9 +630,16 @@ class StockTrackCard extends HTMLElement {
     if (accent) { dialog.style.setProperty("--st-accent", accent); grid.style.setProperty("--stock-track-accent", accent); }
     grid.hass = this._hass;
     dialog.appendChild(grid);
-    dialog.addEventListener("click", (ev) => { if (ev.target === dialog || ev.target.closest?.("[data-close]")) dialog.close(); });
+    // The backdrop closes it, but only a press that starts there too: selecting text in the note and letting go
+    // outside the popup shouldn't.
+    let downOnBackdrop = false;
+    dialog.addEventListener("pointerdown", (ev) => { downOnBackdrop = ev.target === dialog; });
+    dialog.addEventListener("click", (ev) => {
+      if (ev.target.closest?.("[data-close]") || (ev.target === dialog && downOnBackdrop)) dialog.close();
+    });
     dialog.addEventListener("cancel", (ev) => { if (grid._selected) { ev.preventDefault(); grid._closeDay(); } });
     dialog.addEventListener("close", () => {
+      if (dialog.open) return;   // closed only to be shown again as a popup (see connectedCallback)
       grid._leaveDay();
       dialog.remove();
       this._dialog = this._calendar = null;
@@ -645,12 +689,18 @@ class StockTrackCard extends HTMLElement {
     if (active?.dataset?.act) focus = `[data-act="${active.dataset.act}"]${active.dataset.id ? `[data-id="${active.dataset.id}"]` : ""}`;
     else if (active?.dataset?.date) focus = `[data-date="${active.dataset.date}"]`;
     else if (active?.dataset?.field) { focus = `[data-field="${active.dataset.field}"]`; caret = [active.selectionStart, active.selectionEnd]; }
+    this._ink();
     this._redrawing = true;
     try {
       const next = document.createElement("div");
       next.innerHTML = this._html();
       stMorph(this._main, next);
     } finally { this._redrawing = false; }
+    // Say what changed (not on the first draw), once.
+    if (this._said && this._said !== this._lastSaid) {
+      if (this._lastSaid !== undefined) this._live.textContent = this._said;
+      this._lastSaid = this._said;
+    }
     if (this._again) { this._again = false; setTimeout(() => this._render(), 0); }
     if (this._focusNext && root.querySelector(this._focusNext)) { focus = this._focusNext; caret = null; this._focusNext = null; }
     else if (active && active.isConnected && root.activeElement === active) focus = null;   // still where it was
@@ -662,6 +712,7 @@ class StockTrackCard extends HTMLElement {
   }
 
   _html() {
+    this._said = "";
     if (this._empty) {
       return `<div class="st msg"><ha-icon icon="${ST_ICON}"></ha-icon><p>No resources yet. Add one in Settings, Devices &amp; services, Add integration, <b>Stock Track</b>.</p><button class="link" data-act="retry">Check again</button></div>`;
     }
@@ -702,13 +753,14 @@ class StockTrackCard extends HTMLElement {
         : `<button class="${cls}" data-act="edit" title="Tap to type a stocktake" aria-label="${said}. Tap to type a stocktake.">${stNum(level)}</button>`;
     const under = s.running_low ? `<span class="low-tag">Running low</span>`
       : `<span class="unit">${level == null ? "not counted yet" : `${unit} in storage`}</span>`;
+    this._said = said;
     const calendar = this._config.view === "compact"
       ? `<button class="cal-open" data-act="calendar" aria-label="Open the calendar of each day" title="Each day"><ha-icon icon="mdi:calendar-month"></ha-icon></button>` : "";
     return `
       <div class="strip${s.running_low ? " low" : ""}">
         <div class="counter">
           <button class="round take" data-act="take" aria-label="Take one" title="Take one" ${level === 0 ? "disabled" : ""}><span>−</span></button>
-          <div class="count" aria-live="polite" aria-atomic="true">${count}${under}</div>
+          <div class="count">${count}${under}</div>
           <button class="round back" data-act="back" aria-label="Put one back" title="Put one back" ${level == null && !s.used_today ? "disabled" : ""}><span>+</span></button>
         </div>
         <div class="side">${this._rates(s)}${calendar}</div>
@@ -757,7 +809,11 @@ class StockTrackCard extends HTMLElement {
         const tags = (r.count != null ? `<i class="tag k-count">=${stNum(r.count)}</i>` : "") + (r.added ? `<i class="tag k-add">+${stNum(r.added)}</i>` : "");
         const cls = ["slot", kind, date === today ? "now" : "", date === this._selected ? "sel" : "", date === pop ? "pop" : ""].filter(Boolean).join(" ");
         const style = [];
-        if (r.used) style.push(`--t:${(r.used / top).toFixed(2)}`);
+        if (r.used) {
+          const t = r.used / top;
+          style.push(`--t:${t.toFixed(2)}`);
+          if (this._accentRgb && stLightText(stMix(this._accentRgb, ST_LABEL_RGB, 0.4 + 0.6 * t))) style.push("--ink:#fff");
+        }
         slots += `<button class="${cls}" data-date="${date}" title="${label}" aria-label="${label}"${style.length ? ` style="${style.join(";")}"` : ""}>${tags}<span class="jar">${kind === "used" ? r.used : ""}</span>${edge}</button>`;
       }
       shelves += `<div class="shelf">${slots}</div>`;
@@ -793,6 +849,7 @@ class StockTrackCard extends HTMLElement {
     const draft = (f) => (this._drafts[f] && this._drafts[f].date === day.date ? this._drafts[f].value : null);
     const note = draft("note") ?? day.note ?? "";
     const row = series.find((r) => r.date === day.date);
+    this._said = `${stNum(day.used)} used ${when}`;
     const log = day.events.length
       ? `<ul class="log">${day.events.map((e) => this._entry(e)).join("")}</ul>`
       : `<p class="quiet">Nothing logged ${isToday ? "today" : "this day"} yet.</p>`;
@@ -812,7 +869,7 @@ class StockTrackCard extends HTMLElement {
         </div>
         <div class="counter big">
           <div class="btn"><button class="round back" data-act="day-back" aria-label="Put one back: undo a take ${when}" ${day.used ? "" : "disabled"}><span>−</span></button><small>Put one back</small></div>
-          <div class="count" aria-live="polite" aria-atomic="true"><span class="n">${stNum(day.used)}</span><span class="unit">used ${isToday ? "today" : "this day"}</span></div>
+          <div class="count"><span class="n">${stNum(day.used)}</span><span class="unit">used ${isToday ? "today" : "this day"}</span></div>
           <div class="btn"><button class="round take" data-act="day-take" aria-label="Take one ${when}"><span>+</span></button><small>Take one</small></div>
         </div>
         <div class="forms">
@@ -848,11 +905,27 @@ class StockTrackCard extends HTMLElement {
       --st-label: #FFFDF5; --st-ink: #0B2A24; --st-low: var(--warning-color, #F0A030);
       --st-round: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", inherit; }
     ha-card { overflow: hidden; container-type: inline-size; height: 100%; box-sizing: border-box; }
+    .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .probe { display: none; color: var(--st-accent); }
+    /* Tints of the theme's text colour and of the accent. Plain colours here, for browsers that can't mix colours
+       (iOS before 16.2). A mix with var() in it that a browser can't do leaves the property unset rather than
+       falling back to an earlier declaration, so the mixed tints are all set at the end, only where mixing works.
+       They're declared inside ha-card, so an accent card-mod puts on ha-card is the one they're mixed from. */
+    .body, dialog.cal {
+      --st-wash: rgba(127, 127, 127, 0.09); --st-fill: rgba(127, 127, 127, 0.14); --st-plank: rgba(127, 127, 127, 0.2);
+      --st-rule: rgba(127, 127, 127, 0.18); --st-chip: rgba(127, 127, 127, 0.25); --st-edge: rgba(127, 127, 127, 0.35);
+      --st-line: rgba(127, 127, 127, 0.55); --st-faint: rgba(127, 127, 127, 0.4); --st-dim: var(--secondary-text-color);
+      --st-accent-soft: rgba(127, 127, 127, 0.2); --st-accent-rim: rgba(0, 0, 0, 0.22); --st-accent-deep: rgba(0, 0, 0, 0.42);
+      --st-accent-ring: rgba(255, 255, 255, 0.35); --st-accent-lift: var(--st-accent); --st-error-soft: rgba(127, 127, 127, 0.2); }
     .body { display: contents; }
     .st { padding: 16px; color: var(--primary-text-color); display: grid; gap: 14px; font-family: var(--paper-font-body1_-_font-family, inherit); }
     .st.compact { gap: 6px; padding: 10px 14px; height: 100%; box-sizing: border-box; align-content: center; }
     button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     button:focus-visible, .slot:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+    /* A tap area at least 44 px square, where the button itself is drawn smaller. */
+    .cal-open, .pill, button.n { position: relative; }
+    .cal-open::after, .pill::after, button.n::after { content: ""; position: absolute; inset: -3px; }
+    .pill::after { inset: -6px 0; }
     .msg { justify-items: center; text-align: center; color: var(--secondary-text-color); padding: 28px 16px; }
     .msg ha-icon { --mdc-icon-size: 36px; color: var(--st-accent); }
     .msg p { margin: 0; max-width: 34ch; line-height: 1.45; }
@@ -870,10 +943,10 @@ class StockTrackCard extends HTMLElement {
       transition: transform 0.08s ease, background 0.15s ease; }
     .round span { margin-top: -3px; }
     .round.take { border: 0; color: var(--st-on-accent); background: var(--st-accent);
-      box-shadow: inset 0 0 0 3px color-mix(in oklab, var(--st-accent) 78%, #000), inset 0 0 0 5px color-mix(in oklab, var(--st-accent) 70%, #fff); }
+      box-shadow: inset 0 0 0 3px var(--st-accent-rim), inset 0 0 0 5px var(--st-accent-ring); }
     .round.back { border: 2px solid var(--st-accent); background: transparent; color: var(--primary-text-color); }
-    .round.take:not(:disabled):hover { background: color-mix(in oklab, var(--st-accent) 88%, #fff); }
-    .round.back:not(:disabled):hover { background: color-mix(in srgb, var(--st-accent) 18%, transparent); }
+    .round.take:not(:disabled):hover { background: var(--st-accent-lift); }
+    .round.back:not(:disabled):hover { background: var(--st-accent-soft); }
     .round:not(:disabled):active { transform: scale(0.93); }
     .round:disabled { opacity: 0.35; cursor: default; }
     .count { display: grid; justify-items: center; min-width: 72px; }
@@ -895,36 +968,33 @@ class StockTrackCard extends HTMLElement {
     .rates { display: grid; gap: 1px; font-size: 0.8rem; line-height: 1.35; color: var(--secondary-text-color); white-space: nowrap; }
     .rates b { font-family: var(--st-round); font-size: 1.05rem; font-weight: 700; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
     .cal-open { width: 38px; height: 38px; flex: none; display: grid; place-items: center; border-radius: 12px; border: 0; color: var(--secondary-text-color);
-      background: color-mix(in srgb, var(--primary-text-color) 8%, transparent); --mdc-icon-size: 22px; }
-    .cal-open:hover { color: var(--primary-text-color); background: color-mix(in srgb, var(--st-accent) 22%, transparent); }
+      background: var(--st-fill); --mdc-icon-size: 22px; }
+    .cal-open:hover { color: var(--primary-text-color); background: var(--st-accent-soft); }
 
     dialog.cal { padding: 0; width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; box-sizing: border-box;
       color: var(--primary-text-color); background: var(--card-background-color, #1c1c1c); border: 1px solid var(--divider-color); border-radius: 16px; }
     dialog.cal::backdrop { background: rgba(0, 0, 0, 0.6); }
-    .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 8px 0 16px; }
-    .cal-head .x { width: 40px; height: 40px; flex: none; border: 0; border-radius: 50%; background: none; font-size: 1.7rem; line-height: 1; color: var(--secondary-text-color); }
-    .cal-head .x:hover { background: color-mix(in srgb, var(--primary-text-color) 10%, transparent); color: var(--primary-text-color); }
-    dialog.cal stock-track-card { margin-top: -4px; }
+    .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 6px 0 16px; }
+    .cal-head .x { width: 44px; height: 44px; flex: none; border: 0; border-radius: 50%; background: none; font-size: 1.7rem; line-height: 1; color: var(--secondary-text-color); }
+    .cal-head .x:hover { background: var(--st-plank); color: var(--primary-text-color); }
+    dialog.cal stock-track-card { margin-top: -6px; }
 
-    .shelves { display: grid; gap: 3px; padding: 8px 10px 10px; border-radius: 14px; background: color-mix(in srgb, var(--primary-text-color) 5%, transparent); }
+    .shelves { display: grid; gap: 3px; padding: 8px 10px 10px; border-radius: 14px; background: var(--st-wash); }
     .names { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); justify-items: center; font-size: 0.7rem; color: var(--secondary-text-color); }
     .shelf { position: relative; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
     .shelf::before { content: ""; position: absolute; left: -4px; right: -4px; bottom: 0; height: 17px; border-radius: 4px;
-      background: color-mix(in srgb, var(--primary-text-color) 10%, transparent);
-      box-shadow: inset 0 2px 0 color-mix(in srgb, var(--primary-text-color) 9%, transparent), 0 3px 4px -2px rgba(0, 0, 0, 0.35); }
+      background: var(--st-plank); box-shadow: inset 0 2px 0 var(--st-rule), 0 3px 4px -2px rgba(0, 0, 0, 0.35); }
     .slot { position: relative; z-index: 1; min-width: 0; display: grid; grid-template-rows: 1fr 17px; justify-items: center; align-items: end;
       margin: 0; padding: 13px 0 0; border: 0; border-radius: 8px; background: none; }
     .jar { position: relative; width: 64%; max-width: 38px; aspect-ratio: 5 / 6; box-sizing: border-box; display: grid; place-items: center;
       border-radius: 4px 4px 8px 8px; font-family: var(--st-round); font-size: 0.92rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
     .jar::before { content: ""; position: absolute; left: -9%; right: -9%; top: -6px; height: 6px; box-sizing: border-box; border-radius: 3px 3px 1px 1px; }
-    .used .jar { color: var(--st-ink); box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.1);
-      background: linear-gradient(90deg, transparent 9%, rgba(255, 255, 255, 0.5) 9% 17%, transparent 17%),
-        color-mix(in oklab, var(--st-accent) calc(40% + var(--t, 1) * 60%), var(--st-label)); }
-    .used .jar::before { background: color-mix(in oklab, var(--st-accent) 58%, #000); }
-    .zero .jar { color: color-mix(in srgb, var(--secondary-text-color) 60%, transparent); font-size: 0.74rem; font-weight: 600;
-      border: 1.5px solid color-mix(in srgb, var(--secondary-text-color) 42%, transparent); }
-    .zero .jar::before { border: 1.5px solid color-mix(in srgb, var(--secondary-text-color) 42%, transparent); }
-    .untracked .jar { border: 1.5px dashed color-mix(in srgb, var(--secondary-text-color) 30%, transparent); }
+    .used .jar { color: var(--st-on-accent); box-shadow: inset -3px -3px 0 rgba(0, 0, 0, 0.1);
+      background: linear-gradient(90deg, transparent 9%, rgba(255, 255, 255, 0.5) 9% 17%, transparent 17%), var(--st-accent); }
+    .used .jar::before { background: var(--st-accent-deep); }
+    .zero .jar { color: var(--st-dim); font-size: 0.74rem; font-weight: 600; border: 1.5px solid var(--st-line); }
+    .zero .jar::before { border: 1.5px solid var(--st-line); }
+    .untracked .jar { border: 1.5px dashed var(--st-faint); }
     .future .jar { visibility: hidden; }
     .edge { height: 17px; line-height: 17px; padding: 0 4px; border-radius: 4px; font-size: 0.64rem; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .edge.mon { font-weight: 700; color: var(--primary-text-color); }
@@ -938,7 +1008,7 @@ class StockTrackCard extends HTMLElement {
       padding: 2px 4px; border-radius: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .k-add { background: var(--st-accent); color: var(--st-on-accent); }
     .k-count { background: var(--st-label); color: var(--st-ink); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3); }
-    .k-take, .k-back { background: color-mix(in srgb, var(--primary-text-color) 14%, transparent); color: var(--primary-text-color); }
+    .k-take, .k-back { background: var(--st-chip); color: var(--primary-text-color); }
     .slot .tag { position: absolute; top: 0; z-index: 2; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); }
     .slot .k-add { right: 0; transform: rotate(5deg); }
     .slot .k-count { left: 0; transform: rotate(-5deg); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.4); }
@@ -957,11 +1027,11 @@ class StockTrackCard extends HTMLElement {
     .editor { display: grid; gap: 14px; transition: opacity 0.15s ease; }
     .loading .editor { opacity: 0.55; }
     .loading .editor > :not(.day-head) { pointer-events: none; }
-    .day-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .back-link { background: none; border: 0; border-radius: 8px; padding: 6px 8px 6px 2px; color: var(--primary-color); font-size: 0.92rem; font-weight: 500; white-space: nowrap; }
+    .day-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -6px 0; }
+    .back-link { min-height: 44px; background: none; border: 0; border-radius: 8px; padding: 0 8px 0 2px; color: var(--primary-color); font-size: 0.92rem; font-weight: 500; white-space: nowrap; }
     .back-link span { font-size: 1.2rem; line-height: 0; margin-right: 2px; }
-    .nav { display: flex; align-items: center; gap: 2px; }
-    .nav .icon { min-width: 36px; min-height: 36px; border: 0; border-radius: 8px; background: none; font-size: 1.3rem; line-height: 1; color: var(--secondary-text-color); }
+    .nav { display: flex; align-items: center; gap: 0; }
+    .nav .icon { min-width: 44px; min-height: 44px; border: 0; border-radius: 8px; background: none; font-size: 1.3rem; line-height: 1; color: var(--secondary-text-color); }
     .nav .icon:not(:disabled):hover { background: var(--secondary-background-color); }
     .nav .icon:disabled { opacity: 0.4; cursor: default; }
     .day-name { min-width: 8.5ch; text-align: center; font-weight: 600; font-size: 0.95rem; }
@@ -973,41 +1043,64 @@ class StockTrackCard extends HTMLElement {
     .btn small { font-size: 0.72rem; color: var(--secondary-text-color); white-space: nowrap; }
     .forms { display: grid; gap: 8px; }
     .row { display: grid; grid-template-columns: minmax(0, 1fr) 5em auto; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: 12px;
-      background: color-mix(in srgb, var(--primary-text-color) 5%, transparent); }
+      background: var(--st-wash); }
     .row label { display: grid; gap: 1px; min-width: 0; }
     .row b { font-size: 0.92rem; font-weight: 600; }
     .row small { font-size: 0.74rem; color: var(--secondary-text-color); }
     .field { width: 100%; box-sizing: border-box; padding: 6px 4px; font: inherit; font-family: var(--st-round); font-size: max(16px, 1.1rem); font-weight: 700; text-align: center;
-      color: var(--primary-text-color); background: color-mix(in srgb, var(--primary-text-color) 7%, transparent);
-      border: 1.5px solid color-mix(in srgb, var(--primary-text-color) 18%, transparent); border-radius: 8px; }
+      color: var(--primary-text-color); background: var(--st-fill); border: 1.5px solid var(--st-edge); border-radius: 8px; }
     .field::placeholder { color: var(--secondary-text-color); opacity: 0.5; }
     .pill { min-width: 60px; padding: 8px 14px; border: 0; border-radius: 999px; font-size: 0.88rem; font-weight: 600; background: var(--st-accent); color: var(--st-on-accent); }
-    .pill:hover { background: color-mix(in oklab, var(--st-accent) 88%, #fff); }
+    .pill:hover { background: var(--st-accent-lift); }
     .logged h3 { margin: 0 0 4px; font-size: 0.8rem; font-weight: 500; color: var(--secondary-text-color); }
     .log { list-style: none; margin: 0; padding: 0; }
-    .entry { display: grid; grid-template-columns: minmax(2.8em, auto) minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 38px;
-      border-bottom: 1px solid color-mix(in srgb, var(--primary-text-color) 9%, transparent); }
+    .entry { display: grid; grid-template-columns: minmax(2.8em, auto) minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 44px;
+      border-bottom: 1px solid var(--st-rule); }
     .entry:last-child { border-bottom: 0; }
     .entry .tag { justify-self: start; font-size: 0.78rem; padding: 3px 6px; }
     .entry .what { font-size: 0.9rem; min-width: 0; }
     .entry .what small { display: block; font-size: 0.75rem; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .entry .time { font-size: 0.78rem; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .entry.pending { opacity: 0.6; }
-    .del { min-width: 36px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--secondary-text-color); display: grid; place-items: center; --mdc-icon-size: 20px; }
-    button.del:hover { color: var(--error-color, #db4437); background: color-mix(in srgb, var(--error-color, #db4437) 14%, transparent); }
-    .del.armed { padding: 0 10px; font-size: 0.8rem; font-weight: 700; color: #fff; background: var(--error-color, #db4437); }
+    .del { min-width: 44px; height: 44px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--secondary-text-color); display: grid; place-items: center; --mdc-icon-size: 20px; }
+    button.del:hover { color: var(--error-color, #db4437); background: var(--st-error-soft); }
+    .del.armed { height: 32px; margin: 6px 0; padding: 0 10px; font-size: 0.8rem; font-weight: 700; color: #fff; background: var(--error-color, #db4437); position: relative; }
+    .del.armed::after { content: ""; position: absolute; inset: -6px 0; }
     button.del.armed:hover { color: #fff; background: var(--error-color, #db4437); }
-    .note { width: 100%; box-sizing: border-box; font: inherit; font-size: max(16px, 1rem); color: var(--primary-text-color); background: color-mix(in srgb, var(--primary-text-color) 7%, transparent);
+    .note { width: 100%; box-sizing: border-box; font: inherit; font-size: max(16px, 1rem); color: var(--primary-text-color); background: var(--st-fill);
       border: 1px solid transparent; border-radius: 10px; padding: 9px 12px; }
     .note::placeholder { color: var(--secondary-text-color); opacity: 0.8; }
     .note:focus, .exact:focus, .field:focus { outline: none; border-color: var(--st-accent); }
 
     @container (max-width: 330px) {
-      .strip { gap: 8px 12px; } .counter { gap: 8px; } .round { width: 42px; height: 42px; } .count { min-width: 64px; } .n { font-size: 2rem; }
+      .strip { gap: 8px 12px; } .counter { gap: 8px; } .count { min-width: 64px; } .n { font-size: 2rem; }
       .shelves { padding: 6px 4px 8px; } .edge { padding: 0 2px; font-size: 0.6rem; } .slot .tag { font-size: 0.56rem; padding: 1px 3px; }
       .counter.big { gap: 10px; } .row { grid-template-columns: minmax(0, 1fr) 4em auto; gap: 6px; } .pill { min-width: 0; padding: 8px 10px; }
       .entry { gap: 6px; } }
     @media (prefers-reduced-motion: reduce) { .round { transition: none; } .n, .slot.pop .jar { animation: none !important; } }
+
+    @supports (color: color-mix(in srgb, red, blue)) {
+      .body, dialog.cal {
+        --st-wash: color-mix(in srgb, var(--primary-text-color) 5%, transparent);
+        --st-fill: color-mix(in srgb, var(--primary-text-color) 7%, transparent);
+        --st-plank: color-mix(in srgb, var(--primary-text-color) 10%, transparent);
+        --st-rule: color-mix(in srgb, var(--primary-text-color) 9%, transparent);
+        --st-chip: color-mix(in srgb, var(--primary-text-color) 14%, transparent);
+        --st-edge: color-mix(in srgb, var(--primary-text-color) 18%, transparent);
+        --st-line: color-mix(in srgb, var(--secondary-text-color) 42%, transparent);
+        --st-faint: color-mix(in srgb, var(--secondary-text-color) 30%, transparent);
+        --st-dim: color-mix(in srgb, var(--secondary-text-color) 60%, transparent);
+        --st-accent-soft: color-mix(in srgb, var(--st-accent) 20%, transparent);
+        --st-accent-rim: color-mix(in oklab, var(--st-accent) 78%, #000);
+        --st-accent-deep: color-mix(in oklab, var(--st-accent) 58%, #000);
+        --st-accent-ring: color-mix(in oklab, var(--st-accent) 70%, #fff);
+        --st-accent-lift: color-mix(in oklab, var(--st-accent) 88%, #fff);
+        --st-error-soft: color-mix(in srgb, var(--error-color, #db4437) 14%, transparent); }
+      /* A used day's canister: paler on lighter days. Its text is set per day, to read on its own shade. */
+      .used .jar { color: var(--ink, var(--st-ink));
+        background: linear-gradient(90deg, transparent 9%, rgba(255, 255, 255, 0.5) 9% 17%, transparent 17%),
+          color-mix(in oklab, var(--st-accent) calc(40% + var(--t, 1) * 60%), var(--st-label)); }
+    }
     `;
   }
 }

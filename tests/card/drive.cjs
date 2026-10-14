@@ -38,6 +38,20 @@ async function main() {
     // R("card") is the card's shadow root; R("pop") the calendar card's inside the popup.
     await p.evaluateOnNewDocument(() => {
       window.R = (w) => (w === "pop" ? window.card?.shadowRoot.querySelector("dialog stock-track-card")?.shadowRoot : window.card?.shadowRoot);
+      // Any CSS colour (oklab from color-mix included) to sRGB, and the WCAG contrast of two.
+      window.rgbOf = (css) => { const c = document.createElement("canvas"); c.width = c.height = 1; const x = c.getContext("2d"); x.fillStyle = css; x.fillRect(0, 0, 1, 1); return [...x.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+      window.contrastOf = (el) => {
+        const lum = (rgb) => rgb.map((c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }).reduce((s, c, i) => s + c * [0.2126, 0.7152, 0.0722][i], 0);
+        const cs = getComputedStyle(el); const a = lum(window.rgbOf(cs.color)); const b = lum(window.rgbOf(cs.backgroundColor));
+        return Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100;
+      };
+      // Whether a tap 21 px left, right, above and below the middle of an element still lands on it (a 44 px target,
+      // less a pixel either side for rounding).
+      window.hitArea = (w, sel) => {
+        const r = window.R(w); const el = r?.querySelector(sel); if (!el) return false;
+        const b = el.getBoundingClientRect(); const x = b.left + b.width / 2; const y = b.top + b.height / 2;
+        return [[-21, 0], [21, 0], [0, -21], [0, 21]].every(([dx, dy]) => el.contains(r.elementFromPoint(x + dx, y + dy)));
+      };
     });
 
     const open = async (qs = "theme=dark", w = 520, h = 900, data = "demo") => {
@@ -89,6 +103,8 @@ async function main() {
     const takenToday = o.stats.used_today;
     await click('[data-act="take"]');
     let w = await log();
+    const live = await p.evaluate(() => { const r = window.R("card"); const sr = r.querySelector(".sr[aria-live]"); return { text: sr?.textContent, outside: !!sr && !r.querySelector(".body").contains(sr), others: r.querySelector(".body").querySelectorAll("[aria-live]").length }; });
+    check("screen readers hear the new count, from one live region outside what's redrawn", live.text === `${start - 1} rolls in storage` && live.outside && live.others === 0, JSON.stringify(live));
     check("− takes one out of storage, for today (no date sent)", (await n()) === start - 1 && w.length === 1 && w[0].type === "stock_track/change" && w[0].kind === "take" && w[0].delta === 1 && !("date" in w[0]) && (await store()).in_storage === start - 1, `${await n()} ${JSON.stringify(w)}`);
     await click('[data-act="back"]');
     w = await log();
@@ -245,12 +261,16 @@ async function main() {
     const shown = await p.evaluate(() => ({ name: window.R("pop").querySelector(".day-name")?.textContent, used: window.R("pop").querySelector(".counter .n")?.textContent, entries: [...window.R("pop").querySelectorAll(".entry")].map((e) => e.querySelector(".what").firstChild.textContent + " " + e.querySelector(".tag").textContent) }));
     check("tapping a day opens it: its date, how many were used, and what was logged", shown.name === long(past) && shown.used === String(rec.used) && shown.entries.length === rec.events.length && shown.entries.includes("Restocked +24"), JSON.stringify(shown));
     check("keyboard focus moves to the way back", (await focused("pop")) === "days");
+    const targets = await p.evaluate(() => ({ prev: window.hitArea("pop", '[data-act="prev"]'), next: window.hitArea("pop", '[data-act="next"]'), days: window.hitArea("pop", '[data-act="days"]'),
+      del: window.hitArea("pop", '[data-act="del"]'), add: window.hitArea("pop", '[data-act="add-save"]'), close: window.hitArea("card", "dialog [data-close]") }));
+    check("the day's buttons take a tap anywhere in 44 px: previous, next, All days, delete, Add, close", Object.values(targets).every(Boolean), JSON.stringify(targets));
 
     const sizes = await p.evaluate(() => ["note", "add", "count"].map((f) => parseFloat(getComputedStyle(window.R("pop").querySelector(`[data-field="${f}"]`)).fontSize)));
     check("text boxes are at least 16 px, so a phone doesn't zoom in on them", sizes.every((x) => x >= 16), sizes.join());
     marks = (await log()).length;
     await click('[data-act="day-take"]', "pop", 500);
     w = (await log()).slice(marks);
+    check("...and the day editor says how many were used on the day", (await p.evaluate(() => window.R("pop").querySelector(".sr").textContent)) === `${rec.used + 1} used on ${long(past)}`, await p.evaluate(() => window.R("pop").querySelector(".sr").textContent));
     check("+ on a past day takes one on that day", w.length === 1 && w[0].type === "stock_track/change" && w[0].kind === "take" && w[0].date === past && (await text(".counter .n", "pop")) === String(rec.used + 1), `${JSON.stringify(w)} | ${await text(".counter .n", "pop")}`);
     await click('[data-act="day-back"]', "pop", 500);
     w = (await log()).slice(marks);
@@ -364,6 +384,24 @@ async function main() {
     await open("theme=dark&weeks=8&hide_title=1", 520, 1200);
     await openPopup();
     check("weeks: eight shelves", (await count(".shelf", "pop")) === 8 && (await count(".slot", "pop")) === 56);
+
+    await open("theme=dark&hide_title=1", 520, 1000);
+    await openPopup(); await openDay(past);
+    const subsOpen = await p.evaluate(() => window.subs.length);
+    // What a masonry view does when its columns change (a phone turned): the card is taken out and put back at once.
+    await p.evaluate(() => { const col = document.createElement("div"); col.style.width = "440px"; document.body.appendChild(col); col.appendChild(window.card); });
+    await sleep(500);
+    const moved = await p.evaluate(() => { const d = window.card.shadowRoot.querySelector("dialog.cal"); return { open: !!d?.open, modal: !!d?.matches(":modal"), day: window.R("pop")?.querySelector(".day-name")?.textContent, subs: window.subs.length }; });
+    check("a card that's moved (a phone turned) keeps its popup, as a popup, on the same day", moved.open && moved.modal && moved.day === long(past) && moved.subs === subsOpen, JSON.stringify(moved));
+    await p.keyboard.press("Escape"); await sleep(300); await p.keyboard.press("Escape"); await sleep(400);
+    check("...and still closes as before", !(await has("dialog.cal")) && (await focused()) === "calendar");
+    await openPopup(); await openDay(past);
+    const noteBox = await (await el('[data-field="note"]', "pop")).boundingBox();
+    await p.mouse.move(noteBox.x + 20, noteBox.y + noteBox.height / 2); await p.mouse.down();
+    await p.mouse.move(6, 6, { steps: 5 }); await p.mouse.up(); await sleep(400);
+    check("selecting text in the popup and letting go outside it doesn't close it", await p.evaluate(() => !!window.card.shadowRoot.querySelector("dialog.cal")?.open));
+    await p.mouse.click(6, 6); await sleep(400);
+    check("a tap outside it does", !(await has("dialog.cal")));
     await open("theme=dark&hide_title=1", 520, 1000, "fresh");
     await openPopup();
     const fresh = await p.evaluate((t) => [...window.R("pop").querySelectorAll("button.slot")].map((b) => ({ date: b.dataset.date, cls: b.className, jar: b.querySelector(".jar").textContent })), today);
@@ -377,11 +415,30 @@ async function main() {
     check("card-mod's --st-accent on ha-card colours the card", accent === "rgb(255, 122, 147)", accent);
     const bare = await p.evaluate(() => { const r = window.R("card"); const kids = [...r.querySelector(".strip").querySelectorAll(".counter, .side")].map((k) => Math.round(k.getBoundingClientRect().top + k.getBoundingClientRect().height / 2)); return { h: Math.round(r.querySelector("ha-card").getBoundingClientRect().height), rows: new Set(kids.map((y) => Math.round(y / 12))).size, title: !!r.querySelector(".title") }; });
     check("compact without its title is one line, under 90 px, on a 380 px card", !bare.title && bare.rows === 1 && bare.h <= 90, JSON.stringify(bare));
+    const stripTargets = await p.evaluate(() => ({ calendar: window.hitArea("card", '[data-act="calendar"]'), number: window.hitArea("card", '[data-act="edit"]'), take: window.hitArea("card", '[data-act="take"]'), back: window.hitArea("card", '[data-act="back"]') }));
+    check("...and its buttons take a tap anywhere in 44 px, the calendar button too", Object.values(stripTargets).every(Boolean), JSON.stringify(stripTargets));
     await shoot("strip-navy.png");
     await openPopup();
     const navy = await p.evaluate(() => { const d = window.card.shadowRoot.querySelector("dialog.cal"); const s = getComputedStyle(d); return { bg: s.backgroundColor, img: s.backgroundImage, left: s.borderLeftColor, now: getComputedStyle(window.R("pop").querySelector(".slot.now .edge")).backgroundColor }; });
     check("on a see-through navy card the popup keeps the gradient over a solid base, and the accent", /gradient/.test(navy.img) && (navy.bg.match(/[\d.]+/g).length === 3 || Number(navy.bg.match(/[\d.]+/g)[3]) === 1) && navy.left === "rgb(255, 122, 147)" && navy.now === "rgb(255, 122, 147)", JSON.stringify(navy));
     await dialogShot("popup-navy.png");
+
+    // ---- text on the accent -----------------------------------------------------------------------------
+    await open("theme=light&view=calendar");
+    const ink = (w = "card") => p.evaluate((w) => {
+      const r = window.R(w);
+      const jars = [...r.querySelectorAll(".slot.used .jar")].map((j) => window.contrastOf(j));
+      return { take: window.contrastOf(r.querySelector('[data-act="take"]')), today: window.contrastOf(r.querySelector(".slot.now .edge")), sticker: window.contrastOf(r.querySelector(".slot .k-add")), jars: Math.min(...jars), color: getComputedStyle(r.querySelector('[data-act="take"]')).color };
+    }, w);
+    let k = await ink();
+    check("text on the default accent is dark, and readable (4.5:1 or better)", k.color === "rgb(5, 36, 30)" && Math.min(k.take, k.today, k.sticker, k.jars) >= 4.5, JSON.stringify(k));
+    await p.evaluate(() => window.card.style.setProperty("--stock-track-accent", "#1565C0")); await p.evaluate(() => window.notify()); await sleep(500);
+    k = await ink();
+    check("on a dark accent it turns light, and stays readable on the button, today's date, the stickers and every day's canister", k.color === "rgb(255, 255, 255)" && Math.min(k.take, k.today, k.sticker, k.jars) >= 4.5, JSON.stringify(k));
+    await open("theme=dark");
+    await p.evaluate(() => { window.card.shadowRoot.querySelector("#from-card-mod").innerHTML = "<style>ha-card { --st-accent: #0D47A1; }</style>"; });
+    await sleep(2100); await p.evaluate(() => { window.card.hass = window.makeHass(); }); await sleep(300);
+    check("an accent card-mod applies after the first draw is picked up too", (await p.evaluate(() => getComputedStyle(window.R("card").querySelector('[data-act="take"]')).color)) === "rgb(255, 255, 255)");
 
     // ---- the calendar layout: the shelves on the card -------------------------------------------------
     await open("theme=dark&view=calendar");
@@ -455,6 +512,32 @@ async function main() {
       return { view: bad({ view: "grid" }), weeks: bad({ weeks: 13 }), weeks1: bad({ weeks: 1 }), ok: !bad({ view: "calendar", weeks: 12 }), empty, selector: entry?.selector?.config_entry?.integration, stub: JSON.stringify(customElements.get("stock-track-card").getStubConfig()), labels: form.schema.every((s) => form.computeLabel(s)) };
     });
     check("settings: a bad layout or week count is refused, an empty one is compact; the form picks a Stock Track resource", settings.view && settings.weeks && settings.weeks1 && settings.ok && settings.empty === "compact,compact" && settings.selector === "stock_track" && settings.stub === "{}" && settings.labels, JSON.stringify(settings));
+
+    // Older iPhones (iOS before 16.2) can't mix colours: what's drawn then is the plain set of tints.
+    await open("theme=dark");
+    const plain = await p.evaluate(async () => {
+      const C = customElements.get("stock-track-card");
+      const css = C.styles;
+      const before = css.replace(/\/\*[\s\S]*?\*\//g, "").split("@supports")[0];
+      const used = new Set(css.match(/var\(--st-[a-z-]+/g).map((x) => x.slice(4)));
+      const defined = new Set([...before.matchAll(/(--st-[a-z-]+):/g)].map((m) => m[1]));
+      Object.defineProperty(C, "styles", { configurable: true, get: () => css.replace("@supports (color: color-mix(in srgb, red, blue))", "@supports (color: no-such-colour(1))") });
+      const c = document.createElement("stock-track-card");
+      c.setConfig({ view: "calendar" });
+      document.getElementById("wrap").appendChild(c);
+      c.hass = window.makeHass();
+      await new Promise((r) => setTimeout(r, 700));
+      Object.defineProperty(C, "styles", { configurable: true, get: () => css });
+      const r = c.shadowRoot; const jar = r.querySelector(".slot.used .jar");
+      const clear = (v) => v === "rgba(0, 0, 0, 0)" || v === "transparent";
+      const out = { mixFree: !before.includes("color-mix("), undefinedTints: [...used].filter((u) => !defined.has(u)),
+        jarFill: !clear(getComputedStyle(jar).backgroundColor), lid: !clear(getComputedStyle(jar, "::before").backgroundColor),
+        shelf: !clear(getComputedStyle(r.querySelector(".shelf"), "::before").backgroundColor), shelves: !clear(getComputedStyle(r.querySelector(".shelves")).backgroundColor),
+        jarText: window.contrastOf(jar) };
+      c.remove();
+      return out;
+    });
+    check("without colour mixing (older iOS) every tint has a plain colour, and used days keep a fill with readable text", plain.mixFree && plain.undefinedTints.length === 0 && plain.jarFill && plain.lid && plain.shelf && plain.shelves && plain.jarText >= 4.5, JSON.stringify(plain));
 
     check("no script errors", errors.length === 0, errors.join(" | "));
   } finally {
