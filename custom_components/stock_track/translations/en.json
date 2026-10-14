@@ -1,0 +1,163 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a resource",
+        "description": "Stock Track keeps count of a household supply: what's in storage, what's been used and how long it'll last.",
+        "data": {
+          "name": "Name",
+          "unit": "Unit",
+          "icon": "Icon",
+          "low_level": "Running low at"
+        },
+        "data_description": {
+          "name": "Shown on the card and used to name the sensors, such as Toilet paper or Tinned food.",
+          "unit": "What you count it in, such as rolls, tins or packs. It can't be changed later.",
+          "icon": "Shown on the card.",
+          "low_level": "The Running low sensor turns on when there are this many or fewer in storage. 0 turns it off."
+        }
+      }
+    },
+    "error": {
+      "name_required": "Give the resource a name.",
+      "name_taken": "There's already a resource with that name.",
+      "unit_required": "Give it a unit, such as rolls."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Resource",
+        "data": {
+          "icon": "Icon",
+          "low_level": "Running low at"
+        },
+        "data_description": {
+          "icon": "Shown on the card.",
+          "low_level": "The Running low sensor turns on at this many or fewer. 0 turns it off."
+        },
+        "description": "The unit is set when the resource is added: Home Assistant keeps these sensors' history in it."
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "in_storage": {
+        "name": "In storage"
+      },
+      "used_today": {
+        "name": "Used today"
+      },
+      "used_last_7_days": {
+        "name": "Used last 7 days"
+      },
+      "used_this_month": {
+        "name": "Used this month"
+      },
+      "used_total": {
+        "name": "Used total"
+      },
+      "weekly_use": {
+        "name": "Weekly use"
+      },
+      "days_between": {
+        "name": "Days between"
+      },
+      "days_left": {
+        "name": "Supply left"
+      },
+      "last_taken": {
+        "name": "Last taken"
+      },
+      "last_restock": {
+        "name": "Last restock"
+      }
+    },
+    "binary_sensor": {
+      "running_low": {
+        "name": "Running low"
+      }
+    },
+    "number": {
+      "stocktake": {
+        "name": "Stocktake"
+      }
+    },
+    "button": {
+      "take_one": {
+        "name": "Take one"
+      },
+      "put_back": {
+        "name": "Put one back"
+      }
+    }
+  },
+  "services": {
+    "take": {
+      "name": "Take",
+      "description": "Take some out of storage to use. Usage rates count these.",
+      "fields": {
+        "entry_id": {
+          "name": "Resource",
+          "description": "Which resource. Not needed when there is only one."
+        },
+        "amount": {
+          "name": "Amount",
+          "description": "How many. 1 if left out."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The day they were taken. Today if left out."
+        },
+        "note": {
+          "name": "Note",
+          "description": "An optional note."
+        }
+      }
+    },
+    "restock": {
+      "name": "Restock",
+      "description": "Put more into storage.",
+      "fields": {
+        "entry_id": {
+          "name": "Resource",
+          "description": "Which resource. Not needed when there is only one."
+        },
+        "amount": {
+          "name": "Amount",
+          "description": "How many went into storage."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The day they went in. Today if left out."
+        },
+        "note": {
+          "name": "Note",
+          "description": "An optional note, such as where they came from."
+        }
+      }
+    },
+    "stocktake": {
+      "name": "Stocktake",
+      "description": "Record an exact count of what's in storage. Everything after it counts on from this number.",
+      "fields": {
+        "entry_id": {
+          "name": "Resource",
+          "description": "Which resource. Not needed when there is only one."
+        },
+        "count": {
+          "name": "Count",
+          "description": "How many are in storage."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The day of the count. Now if left out."
+        },
+        "note": {
+          "name": "Note",
+          "description": "An optional note."
+        }
+      }
+    }
+  }
+}

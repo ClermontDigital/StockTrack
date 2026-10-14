@@ -1,0 +1,22 @@
+{
+  "domain": "stock_track",
+  "name": "Stock Track",
+  "after_dependencies": [
+    "frontend",
+    "lovelace"
+  ],
+  "codeowners": [
+    "@ClermontDigital"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/ClermontDigital/StockTrack",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/ClermontDigital/StockTrack/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

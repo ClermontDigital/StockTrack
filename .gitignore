@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+
+.env
+*.log
+
+# card checks
+node_modules/

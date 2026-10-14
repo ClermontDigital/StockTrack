@@ -1,0 +1,58 @@
+take:
+  fields:
+    entry_id:
+      selector:
+        config_entry:
+          integration: stock_track
+    amount:
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    date:
+      selector:
+        date:
+    note:
+      selector:
+        text:
+restock:
+  fields:
+    entry_id:
+      selector:
+        config_entry:
+          integration: stock_track
+    amount:
+      required: true
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    date:
+      selector:
+        date:
+    note:
+      selector:
+        text:
+stocktake:
+  fields:
+    entry_id:
+      selector:
+        config_entry:
+          integration: stock_track
+    count:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100000
+          mode: box
+    date:
+      selector:
+        date:
+    note:
+      selector:
+        text:
