@@ -3,7 +3,7 @@
  * Colours come from the Home Assistant theme; set --stock-track-accent to change the accent
  * (or --st-accent on ha-card, from card-mod).
  */
-const ST_VERSION = "0.1.1";
+const ST_VERSION = "0.1.2";
 
 const ST_MAX = 100000;                // the most the integration takes in one go
 const ST_UNIT = "rolls";              // only used if a resource somehow comes without a unit or icon of its own

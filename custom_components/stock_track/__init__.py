@@ -125,6 +125,7 @@ async def _async_resources(hass: HomeAssistant):
         return None
     if hasattr(resources, "loaded") and not resources.loaded:
         await resources.async_load()
+        resources.loaded = True   # as Home Assistant's own loading does, so it isn't loaded twice
     return resources
 
 

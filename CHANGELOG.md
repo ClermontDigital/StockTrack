@@ -1,3 +1,8 @@
+## 0.1.2
+
+- **The dashboards' resource list is read once.** Adding the card to it now marks the list loaded, as
+  Home Assistant does itself, so the first dashboard to ask for it doesn't read it from storage again.
+
 ## 0.1.1
 
 Fixes to the card, from a review.

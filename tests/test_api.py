@@ -109,3 +109,27 @@ async def test_services(hass, entry):
         await hass.services.async_call(DOMAIN, "take", {"date": today + timedelta(days=5)}, blocking=True)
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(DOMAIN, "take", {"entry_id": "nope"}, blocking=True)
+
+
+async def test_the_resource_list_is_loaded_once(hass: HomeAssistant, hass_ws_client):
+    """Registering the card marks the resource list loaded, so the dashboards' own request doesn't load it again."""
+    from homeassistant.components.lovelace import LOVELACE_DATA
+    from homeassistant.setup import async_setup_component
+
+    assert await async_setup_component(hass, "lovelace", {})
+    resources = hass.data[LOVELACE_DATA].resources
+    loads, load = [], resources.async_load
+
+    async def counted():
+        loads.append(1)
+        await load()
+
+    resources.async_load = counted
+    e = MockConfigEntry(domain=DOMAIN, title="Toilet paper", data={"name": "Toilet paper", "unit": "rolls"})
+    e.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(e.entry_id)
+    await hass.async_block_till_done()
+    client = await hass_ws_client(hass)
+    r = await _ws(client, type="lovelace/resources")
+    assert [i["url"] for i in r["result"] if i["url"].startswith("/stock_track/")] != []
+    assert len(loads) == 1
