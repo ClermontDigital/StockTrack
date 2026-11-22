@@ -18,6 +18,10 @@ restock: takes alone don't say how many are left.
 Usage is measured from the first stocktake (or the first take, if there's never been a stocktake):
 days before that weren't tracked, so they mustn't count as days nothing was used. Rates appear once
 a week has been tracked, and look back at most 30 days.
+
+Paused days (from the pause and resume actions, say while you're away and nothing is used) are left out
+of the rates altogether: the rate is over the last 30 days that weren't paused, and a pause doesn't count
+towards the week before rates appear. Anything taken on a paused day still counts in the totals and the level.
 """
 from __future__ import annotations
 
@@ -85,6 +89,18 @@ def tracking_since(events: Events) -> date | None:
     return None
 
 
+def paused_days(periods: list[dict[str, Any]], today: date) -> frozenset[date]:
+    """Every day inside a pause, from its start to its end (both included); one still going runs to today."""
+    out: set[date] = set()
+    for period in periods:
+        start = date.fromisoformat(period["start"])
+        end = date.fromisoformat(period["end"]) if period.get("end") else today
+        while start <= end:
+            out.add(start)
+            start += timedelta(days=1)
+    return frozenset(out)
+
+
 def used(days: dict[str, dict[str, Any]], start: date, end: date) -> int:
     """Taken from `start` to `end`, both included."""
     if end < start:
@@ -115,6 +131,7 @@ class Stats:
     last_stocktake_count: int | None
     low_level: int
     running_low: bool
+    paused: bool = False             # today is inside a pause
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -123,17 +140,25 @@ class Stats:
         return out
 
 
-def stats(events: Events, today: date, low_level: int = 0) -> Stats:
+def stats(events: Events, today: date, low_level: int = 0, paused: frozenset[date] = frozenset()) -> Stats:
     level, _ = replay(events)
     days = daily(events)
     since = tracking_since(events)
-    tracked = (today - since).days + 1 if since and since <= today else 0
+    # Days tracked that weren't paused, newest first.
+    tracked_list: list[date] = []
+    day = today
+    while since is not None and day >= since:
+        if day not in paused:
+            tracked_list.append(day)
+        day -= timedelta(days=1)
+    tracked = len(tracked_list)
 
     # The rate as a fraction, window_used / window_days, so what's derived from it isn't skewed by rounding.
     window_used = window_days = 0
-    if tracked >= MIN_RATE_DAYS and since is not None:
-        start = max(since, today - timedelta(days=RATE_WINDOW - 1))
-        window_used, window_days = used(days, start, today), (today - start).days + 1
+    if tracked >= MIN_RATE_DAYS:
+        window = tracked_list[:RATE_WINDOW]
+        window_used = sum(days.get(d.isoformat(), empty_day())["used"] for d in window)
+        window_days = len(window)
     per_day = round(window_used / window_days, 3) if window_days else None
 
     takes = [e for e in events if e["kind"] == KIND_TAKE]
@@ -161,6 +186,7 @@ def stats(events: Events, today: date, low_level: int = 0) -> Stats:
         last_stocktake_count=int(counts[-1]["n"]) if counts else None,
         low_level=low_level,
         running_low=bool(low_level > 0 and level is not None and level <= low_level),
+        paused=today in paused,
     )
 
 

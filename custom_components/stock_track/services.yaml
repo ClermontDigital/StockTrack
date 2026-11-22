@@ -56,3 +56,21 @@ stocktake:
     note:
       selector:
         text:
+pause:
+  fields:
+    entry_id:
+      selector:
+        config_entry:
+          integration: stock_track
+    date:
+      selector:
+        date:
+resume:
+  fields:
+    entry_id:
+      selector:
+        config_entry:
+          integration: stock_track
+    date:
+      selector:
+        date:

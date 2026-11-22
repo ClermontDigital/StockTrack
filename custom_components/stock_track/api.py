@@ -96,7 +96,7 @@ def overview(entry: ConfigEntry, store: StockStore, today: date, chart_days: int
         "resource": describe(entry),
         "today": today.isoformat(),
         "day": engine.day_record(store.events, store.notes, day or today),
-        "stats": engine.stats(store.events, today, s["low_level"]).as_dict(),
+        "stats": engine.stats(store.events, today, s["low_level"], store.paused_days(today)).as_dict(),
         "series": engine.series(store.events, store.notes, today, chart_days),
     }
 

@@ -49,7 +49,7 @@ class ResourceEntity(Entity):
         return dt_util.now().date()
 
     def stats(self) -> engine.Stats:
-        return engine.stats(self.store.events, self.today, settings(self._entry)["low_level"])
+        return engine.stats(self.store.events, self.today, settings(self._entry)["low_level"], self.store.paused_days(self.today))
 
     @callback
     def notify_changed(self) -> None:

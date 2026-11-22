@@ -165,6 +165,16 @@ data:
 All three take an optional `note`, and an optional `entry_id` to choose the resource. It's only needed when
 you have more than one.
 
+`stock_track.pause` and `stock_track.resume` pause the usage rates while nothing is being used, say while
+you're away. Paused days are left out of the rates (and don't count towards the week before rates appear),
+so a week away doesn't make it look like you use less; anything taken on them still counts in the totals and
+what's in storage. Both take an optional `date` (today if left out; the day you resume is still paused) and
+an optional `entry_id` (every resource if left out).
+
+```yaml
+action: stock_track.pause
+```
+
 ## Automation ideas
 
 An NFC tag on the cupboard door that takes one out each time it's scanned:
@@ -211,6 +221,8 @@ actions:
   before it doesn't start tracking.
 - The **rates** need a week of tracking, and look back over the last 30 days at most: per week, one every
   so many days, and the **supply left**, which is what's in storage at that rate, rounded down to whole days.
+- **Paused days** (see `stock_track.pause`) are skipped: the rates are over the last 30 days that weren't
+  paused, and a pause doesn't count towards the first week.
 - Weeks run Monday to Sunday.
 
 ## Your data

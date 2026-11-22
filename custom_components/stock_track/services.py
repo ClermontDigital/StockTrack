@@ -1,4 +1,4 @@
-"""stock_track.take / restock / stocktake, for automations, scripts and voice."""
+"""stock_track.take / restock / stocktake / pause / resume, for automations, scripts and voice."""
 from __future__ import annotations
 
 from datetime import date
@@ -14,7 +14,7 @@ from homeassistant.util import dt as dt_util
 from .api import can_change, changed, resources, store_of
 from .const import (
     ATTR_AMOUNT, ATTR_COUNT, ATTR_DATE, ATTR_ENTRY_ID, ATTR_NOTE, DOMAIN, KIND_ADD, KIND_TAKE, MAX_NOTE, MAX_UNITS,
-    SERVICE_RESTOCK, SERVICE_STOCKTAKE, SERVICE_TAKE,
+    SERVICE_PAUSE, SERVICE_RESTOCK, SERVICE_RESUME, SERVICE_STOCKTAKE, SERVICE_TAKE,
 )
 from .storage import InvalidEntry, check_day
 
@@ -31,6 +31,27 @@ STOCKTAKE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_DATE): cv.date,
     vol.Optional(ATTR_NOTE): vol.All(cv.string, vol.Length(max=MAX_NOTE)),
 })
+
+
+PAUSE_SCHEMA = vol.Schema({
+    vol.Optional(ATTR_ENTRY_ID): cv.string,
+    vol.Optional(ATTR_DATE): cv.date,
+})
+
+
+async def _resources_for(hass: HomeAssistant, call: ServiceCall) -> list[str]:
+    """The resource named, or every resource: a pause is usually for the whole household. The person calling
+    needs permission to change each one, as for its Take one button."""
+    loaded = [e.entry_id for e in resources(hass)]
+    if entry_id := call.data.get(ATTR_ENTRY_ID):
+        if entry_id not in loaded:
+            raise ServiceValidationError("That resource isn't set up in Stock Track")
+        loaded = [entry_id]
+    if call.context.user_id:
+        user = await hass.auth.async_get_user(call.context.user_id)
+        if not all(can_change(hass, user, e) for e in loaded):
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+    return loaded
 
 
 async def _resource(hass: HomeAssistant, call: ServiceCall) -> str:
@@ -89,6 +110,20 @@ def async_register_services(hass: HomeAssistant) -> None:
             raise ServiceValidationError(str(err)) from err
         changed(hass, entry_id)
 
+    async def pause(call: ServiceCall) -> None:
+        day = _day(call, dt_util.now().date())
+        for entry_id in await _resources_for(hass, call):
+            await store_of(hass, entry_id).async_pause(day)
+            changed(hass, entry_id)
+
+    async def resume(call: ServiceCall) -> None:
+        day = _day(call, dt_util.now().date())
+        for entry_id in await _resources_for(hass, call):
+            await store_of(hass, entry_id).async_resume(day)
+            changed(hass, entry_id)
+
+    hass.services.async_register(DOMAIN, SERVICE_PAUSE, pause, schema=PAUSE_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_RESUME, resume, schema=PAUSE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_TAKE, _change(KIND_TAKE), schema=TAKE_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_RESTOCK, _change(KIND_ADD), schema=RESTOCK_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_STOCKTAKE, stocktake, schema=STOCKTAKE_SCHEMA)

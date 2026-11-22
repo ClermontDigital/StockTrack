@@ -147,3 +147,37 @@ def test_day_record_lists_the_day_in_order():
     day = engine.day_record(events, {TODAY.isoformat(): "Inventory"}, TODAY)
     assert [e["id"] for e in day["events"]] == ["a", "b"]
     assert day["used"] == 1 and day["count"] == 37 and day["note"] == "Inventory"
+
+
+def test_paused_days_run_from_start_to_end_and_an_open_pause_to_today():
+    periods = [{"start": "2026-10-01", "end": "2026-10-02"}, {"start": "2026-10-13", "end": None}]
+    assert engine.paused_days(periods, TODAY) == frozenset(
+        {date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 13), date(2026, 10, 14)})
+
+
+def test_paused_days_are_left_out_of_the_rates():
+    """Two weeks at 1 a day, then a week away using nothing: the rate stays 1 a day while paused days are left out."""
+    start = TODAY - timedelta(days=20)
+    events = [ev(start, "count", 100, hour=7)] + [ev(start + timedelta(days=i), "take", 1) for i in range(14)]
+    paused = frozenset(TODAY - timedelta(days=back) for back in range(0, 7))
+    away = engine.stats(events, TODAY, paused=paused)
+    assert away.per_day == 1.0 and away.per_week == 7.0 and away.days_between == 1.0
+    assert away.tracked_days == 14 and away.paused
+    assert away.days_left == away.in_storage                     # 86 left at 1 a day
+    home = engine.stats(events, TODAY)
+    assert home.per_day == round(14 / 21, 3) and not home.paused
+
+
+def test_a_pause_does_not_count_towards_the_first_week():
+    start = TODAY - timedelta(days=9)
+    events = [ev(start, "count", 10, hour=7), ev(start, "take", 1)]
+    paused = frozenset(TODAY - timedelta(days=back) for back in range(0, 5))
+    s = engine.stats(events, TODAY, paused=paused)
+    assert s.tracked_days == 5 and s.per_week is None            # 10 days since the stocktake, 5 of them away
+    assert engine.stats(events, TODAY).per_week is not None
+
+
+def test_takes_on_paused_days_still_count_in_the_totals_and_the_level():
+    events = [ev(TODAY - timedelta(days=1), "count", 10, hour=7), ev(TODAY, "take", 2)]
+    s = engine.stats(events, TODAY, paused=frozenset({TODAY}))
+    assert s.used_today == 2 and s.used_total == 2 and s.in_storage == 8

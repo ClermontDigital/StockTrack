@@ -133,3 +133,26 @@ async def test_the_resource_list_is_loaded_once(hass: HomeAssistant, hass_ws_cli
     r = await _ws(client, type="lovelace/resources")
     assert [i["url"] for i in r["result"] if i["url"].startswith("/stock_track/")] != []
     assert len(loads) == 1
+
+
+async def test_pause_and_resume(hass, entry):
+    today = dt_util.now().date()
+    store = hass.data[DOMAIN][entry.entry_id]["store"]
+    await hass.services.async_call(DOMAIN, "stocktake", {"count": 50, "date": today - timedelta(days=20)}, blocking=True)
+    for back in range(7, 21):
+        await hass.services.async_call(DOMAIN, "take", {"date": today - timedelta(days=back)}, blocking=True)
+    await hass.services.async_call(DOMAIN, "pause", {"date": today - timedelta(days=6)}, blocking=True)
+    await hass.async_block_till_done()
+    assert store.pausing
+    assert hass.states.get("sensor.toilet_paper_weekly_use").state == "7.0"
+    await hass.services.async_call(DOMAIN, "pause", {}, blocking=True)           # already paused: no second pause
+    await hass.services.async_call(DOMAIN, "resume", {}, blocking=True)
+    await hass.services.async_call(DOMAIN, "resume", {}, blocking=True)          # not paused: nothing changes
+    await hass.async_block_till_done()
+    assert store.paused == [{"start": (today - timedelta(days=6)).isoformat(), "end": today.isoformat()}]
+    assert hass.states.get("sensor.toilet_paper_weekly_use").state == "7.0"     # the week away still left out
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(DOMAIN, "pause", {"entry_id": "not-a-resource"}, blocking=True)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.data[DOMAIN][entry.entry_id]["store"].paused == store.paused    # kept over a restart

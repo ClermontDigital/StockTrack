@@ -1,3 +1,10 @@
+## 0.2.0
+
+- **Pause and resume.** `stock_track.pause` and `stock_track.resume` leave days out of the usage rates, for
+  when you're away and nothing is used. A week away no longer makes the rate drop and the supply look like it
+  lasts longer. Anything taken on paused days still counts in the totals and what's in storage. Every resource
+  is paused unless you name one, and a pause carries over a restart.
+
 ## 0.1.2
 
 - **The dashboards' resource list is read once.** Adding the card to it now marks the list loaded, as

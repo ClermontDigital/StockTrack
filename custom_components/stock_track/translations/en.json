@@ -158,6 +158,34 @@
           "description": "An optional note."
         }
       }
+    },
+    "pause": {
+      "name": "Pause",
+      "description": "Pause the usage rates, for example while you're away and nothing is used. Paused days are left out of the rates and don't count towards the week before rates appear; anything taken on them still counts in the totals and what's in storage.",
+      "fields": {
+        "entry_id": {
+          "name": "Resource",
+          "description": "Which resource. Every resource if left out."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The first paused day. Today if left out."
+        }
+      }
+    },
+    "resume": {
+      "name": "Resume",
+      "description": "End the pause. The day you resume is still left out of the rates.",
+      "fields": {
+        "entry_id": {
+          "name": "Resource",
+          "description": "Which resource. Every resource if left out."
+        },
+        "date": {
+          "name": "Date",
+          "description": "The last paused day. Today if left out."
+        }
+      }
     }
   }
 }

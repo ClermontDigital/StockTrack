@@ -11,7 +11,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, KIND_ADD, KIND_COUNT, KIND_TAKE, MAX_NOTE, MAX_UNITS
-from .engine import ordered
+from .engine import ordered, paused_days
 
 STORAGE_VERSION = 1
 EARLIEST = date(2000, 1, 1)
@@ -68,14 +68,38 @@ class StockStore:
         self._lock = asyncio.Lock()
         self.events: list[dict[str, Any]] = []
         self.notes: dict[str, str] = {}
+        self.paused: list[dict[str, str | None]] = []   # [{"start": "2026-11-22", "end": "2026-11-29" or None}]
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
         self.events = ordered(data.get("events") or [])
         self.notes = data.get("notes") or {}
+        self.paused = data.get("paused") or []
 
     async def _save(self) -> None:
-        await self._store.async_save({"events": self.events, "notes": self.notes})
+        await self._store.async_save({"events": self.events, "notes": self.notes, "paused": self.paused})
+
+    @property
+    def pausing(self) -> bool:
+        return any(p.get("end") is None for p in self.paused)
+
+    def paused_days(self, today: date) -> frozenset[date]:
+        return paused_days(self.paused, today)
+
+    async def async_pause(self, day: date) -> None:
+        """Start a pause on `day`. Pausing while already paused changes nothing."""
+        async with self._lock:
+            if not self.pausing:
+                self.paused.append({"start": day.isoformat(), "end": None})
+                await self._save()
+
+    async def async_resume(self, day: date) -> None:
+        """End the pause on `day` (that day is still paused). Resuming when not paused changes nothing."""
+        async with self._lock:
+            for period in self.paused:
+                if period.get("end") is None:
+                    period["end"] = max(day.isoformat(), period["start"])
+                    await self._save()
 
     async def async_remove(self) -> None:
         await self._store.async_remove()
